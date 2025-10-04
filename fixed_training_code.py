@@ -8,14 +8,13 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 from torchvision.models import vgg19
-from torchmetrics.image import StructuralSimilarityIndexMeasure as SSIM
 import csv
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 import sys
 import os
 import numpy as np
-from model_cross_self_attn_v1 import UNet_FusionTransformer
+from best_model_for_training import UNet_FusionTransformer
 
 # device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -128,8 +127,8 @@ def custom_collate(batch):
     gt_batch = torch.stack(gt_list)
     return img1_batch, img2_batch, gt_batch, names
 
-# IMPROVED Loss Function
-class ImprovedRGBTFusionLoss(nn.Module):
+# FIXED Loss Function - No torchmetrics dependency
+class FixedRGBTFusionLoss(nn.Module):
     def __init__(self, device='cpu', 
                  lambda_gt=1.0, 
                  lambda_perceptual=0.1, 
@@ -139,7 +138,7 @@ class ImprovedRGBTFusionLoss(nn.Module):
                  lambda_ssim=1.0, 
                  lambda_rgb=0.5, 
                  lambda_thermal=0.5):
-        super(ImprovedRGBTFusionLoss, self).__init__()
+        super(FixedRGBTFusionLoss, self).__init__()
         self.lambda_gt = lambda_gt
         self.lambda_perceptual = lambda_perceptual
         self.lambda_structural = lambda_structural
@@ -155,12 +154,9 @@ class ImprovedRGBTFusionLoss(nn.Module):
         for param in self.vgg_features.parameters():
             param.requires_grad = False
         self.device = device
-        
-        # IMPROVED: Use torchmetrics SSIM for stability
-        self.ssim_metric = SSIM(data_range=1.0).to(device)
 
     def forward(self, fused, rgb, thermal, gt):
-        # Ensure all tensors are the same spatial size and data type
+        # Ensure all tensors are the same spatial size
         target_size = gt.shape[-2:]
         
         if fused.shape[-2:] != target_size:
@@ -170,30 +166,24 @@ class ImprovedRGBTFusionLoss(nn.Module):
         if thermal.shape[-2:] != target_size:
             thermal = F.interpolate(thermal, size=target_size, mode='bilinear', align_corners=False)
 
-        # FIXED: Ensure all tensors have the same data type (convert to float32 for SSIM)
-        fused_f32 = fused.float()
-        gt_f32 = gt.float()
-        rgb_f32 = rgb.float()
-        thermal_f32 = thermal.float()
-
         # IMPROVED: Better ground truth loss with proper weighting
-        l1_gt = F.l1_loss(fused_f32, gt_f32)
-        l2_gt = F.mse_loss(fused_f32, gt_f32)
+        l1_gt = F.l1_loss(fused, gt)
+        l2_gt = F.mse_loss(fused, gt)
         
-        # Use torchmetrics SSIM for stability (now with matching data types)
-        ssim_gt = self.ssim_metric(fused_f32, gt_f32)
+        # Use custom SSIM implementation (no data type issues)
+        ssim_gt = self.ssim(fused, gt)
         ssim_loss_gt = 1 - ssim_gt
         
         # Weighted ground truth loss
         gt_loss = 0.3 * l1_gt + 0.3 * l2_gt + 0.4 * ssim_loss_gt
         
         # IMPROVED: Perceptual loss with proper channel handling
-        if fused_f32.size(1) == 1:
-            fused_3ch = fused_f32.repeat(1, 3, 1, 1)
-            gt_3ch = gt_f32.repeat(1, 3, 1, 1)
+        if fused.size(1) == 1:
+            fused_3ch = fused.repeat(1, 3, 1, 1)
+            gt_3ch = gt.repeat(1, 3, 1, 1)
         else:
-            fused_3ch = fused_f32
-            gt_3ch = gt_f32
+            fused_3ch = fused
+            gt_3ch = gt
             
         # Denormalize for VGG (ImageNet normalization)
         fused_3ch = self.denormalize(fused_3ch)
@@ -202,16 +192,16 @@ class ImprovedRGBTFusionLoss(nn.Module):
         perceptual_loss = F.mse_loss(self.vgg_features(fused_3ch), self.vgg_features(gt_3ch))
         
         # IMPROVED: Structural loss using MS-SSIM
-        structural_loss = 1 - self.ms_ssim(fused_f32, gt_f32)
+        structural_loss = 1 - self.ms_ssim(fused, gt)
         
         # IMPROVED: Modality-specific loss with better balance
-        modality_mse_loss = (self.lambda_rgb * F.mse_loss(fused_f32, rgb_f32) +
-                           self.lambda_thermal * F.mse_loss(fused_f32, thermal_f32))
+        modality_mse_loss = (self.lambda_rgb * F.mse_loss(fused, rgb) +
+                           self.lambda_thermal * F.mse_loss(fused, thermal))
         
         # Gradient loss for edge preservation
-        grad_loss = (self.gradient_loss(fused_f32, gt_f32) + 
-                    0.3 * self.gradient_loss(fused_f32, rgb_f32) +
-                    0.3 * self.gradient_loss(fused_f32, thermal_f32))
+        grad_loss = (self.gradient_loss(fused, gt) + 
+                    0.3 * self.gradient_loss(fused, rgb) +
+                    0.3 * self.gradient_loss(fused, thermal))
         
         # IMPROVED: Total loss with better weighting
         total_loss = (self.lambda_gt * gt_loss + 
@@ -263,18 +253,37 @@ class ImprovedRGBTFusionLoss(nn.Module):
         ssim_values = []
         for i in range(levels):
             if i == 0:
-                ssim_values.append(self.ssim_metric(pred, target))
+                ssim_values.append(self.ssim(pred, target))
             else:
                 pred_down = F.avg_pool2d(pred, 2**i)
                 target_down = F.avg_pool2d(target, 2**i)
-                ssim_values.append(self.ssim_metric(pred_down, target_down))
+                ssim_values.append(self.ssim(pred_down, target_down))
         
         return torch.prod(torch.stack(ssim_values))
 
+    def ssim(self, pred, target, window_size=11):
+        """Custom SSIM implementation that handles mixed precision"""
+        # Clamp inputs to [0, 1] range to avoid division instability
+        pred = pred.clamp(0, 1)
+        target = target.clamp(0, 1)
+
+        mu_pred = F.avg_pool2d(pred, window_size, stride=1, padding=window_size // 2)
+        mu_target = F.avg_pool2d(target, window_size, stride=1, padding=window_size // 2)
+        
+        sigma_pred = F.avg_pool2d(pred**2, window_size, stride=1, padding=window_size // 2) - mu_pred**2
+        sigma_target = F.avg_pool2d(target**2, window_size, stride=1, padding=window_size // 2) - mu_target**2
+        sigma_pred_target = F.avg_pool2d(pred * target, window_size, stride=1, padding=window_size // 2) - mu_pred * mu_target
+        
+        c1, c2 = 0.01**2, 0.03**2
+        ssim_map = ((2 * mu_pred * mu_target + c1) * (2 * sigma_pred_target + c2)) / \
+                ((mu_pred**2 + mu_target**2 + c1) * (sigma_pred + sigma_target + c2))
+        
+        return ssim_map.mean()
+
 # IMPROVED Training Function
-def improved_train_model(model, train_loader, val_loader, test_dataset, epochs, device='cpu'):
+def fixed_train_model(model, train_loader, val_loader, test_dataset, epochs, device='cpu'):
     model = model.to(device)
-    criterion = ImprovedRGBTFusionLoss(device=device)
+    criterion = FixedRGBTFusionLoss(device=device)
     
     # IMPROVED: Better optimizer with weight decay
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-4)
@@ -366,7 +375,7 @@ def improved_train_model(model, train_loader, val_loader, test_dataset, epochs, 
             print("💾 Model improved. Saving...")
 
             torch.save(model.state_dict(),
-                '/usr/mvl2/cvrfr/KeyPonFuse_V1/Codes/models_22aug25/model_training/trained_models/UNet_cross_self_attnTransformerSGTbase_fullres_improved.pth')
+                '/usr/mvl2/cvrfr/KeyPonFuse_V1/Codes/models_22aug25/model_training/trained_models/UNet_cross_self_attnTransformerSGTbase_fullres_fixed.pth')
         else:
             early_stop_counter += 1
             print(f"⏳ No improvement. Patience: {early_stop_counter}/{early_stop_patience}")
@@ -379,7 +388,7 @@ def improved_train_model(model, train_loader, val_loader, test_dataset, epochs, 
 # --- Main Execution ---
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# ✅ Replace with new model
+# ✅ Use the corrected model
 model = UNet_FusionTransformer()
 
 # IMPROVED: Larger batch size for better training stability
@@ -387,6 +396,6 @@ train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, collate_fn=
 val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, collate_fn=custom_collate, num_workers=4)
 
 # Replace num_epochs with a defined integer, e.g., 50
-improved_train_model(model, train_loader, val_loader, test_dataset, epochs=num_epochs, device=device)
+fixed_train_model(model, train_loader, val_loader, test_dataset, epochs=num_epochs, device=device)
 
 print("Training Done.")
