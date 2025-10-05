@@ -216,8 +216,8 @@ class NativeResolutionLoss(nn.Module):
         # Downsample for VGG to save memory
         if fused_3ch.shape[-1] > 512:
             scale_factor = 512 / fused_3ch.shape[-1]
-            fused_3ch = F.interpolate(fused_3ch, scale_factor=scale_factor, mode='bilinear', align_corners=False)
-            gt_3ch = F.interpolate(gt_3ch, scale_factor=scale_factor, mode='bilinear', align_corners=False)
+            fused_3ch = F.interpolate(fused_3ch, scale_factor=scale_factor, mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            gt_3ch = F.interpolate(gt_3ch, scale_factor=scale_factor, mode='bilinear', align_corners=False, recompute_scale_factor=True)
         
         # Denormalize for VGG
         fused_3ch = self.denormalize(fused_3ch)
@@ -228,8 +228,8 @@ class NativeResolutionLoss(nn.Module):
         # Structural loss (downsample for memory)
         if fused.shape[-1] > 512:
             scale_factor = 512 / fused.shape[-1]
-            fused_down = F.interpolate(fused, scale_factor=scale_factor, mode='bilinear', align_corners=False)
-            gt_down = F.interpolate(gt, scale_factor=scale_factor, mode='bilinear', align_corners=False)
+            fused_down = F.interpolate(fused, scale_factor=scale_factor, mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            gt_down = F.interpolate(gt, scale_factor=scale_factor, mode='bilinear', align_corners=False, recompute_scale_factor=True)
         else:
             fused_down = fused
             gt_down = gt
