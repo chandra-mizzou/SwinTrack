@@ -162,6 +162,16 @@ class NativeContentLoss(nn.Module):
             param.requires_grad = False
 
     def forward(self, fused, rgb, thermal, gt):
+        # Ensure all tensors have the same spatial size
+        target_size = gt.shape[-2:]
+        
+        if fused.shape[-2:] != target_size:
+            fused = F.interpolate(fused, size=target_size, mode='bilinear', align_corners=False)
+        if rgb.shape[-2:] != target_size:
+            rgb = F.interpolate(rgb, size=target_size, mode='bilinear', align_corners=False)
+        if thermal.shape[-2:] != target_size:
+            thermal = F.interpolate(thermal, size=target_size, mode='bilinear', align_corners=False)
+        
         # 1. REFERENCE GT LOSS - Learn from the reference fusion
         l1_gt = F.l1_loss(fused, gt)
         ssim_gt = self.ssim(fused, gt)
@@ -270,6 +280,11 @@ def native_resolution_train(model, train_loader, val_loader, test_dataset, epoch
 
             with autocast():
                 output = model(img1_batch, img2_batch)
+                
+                # Debug: Print shapes if there's a mismatch
+                if output.shape[-2:] != gt_batch.shape[-2:]:
+                    print(f"⚠️ Size mismatch - Output: {output.shape}, GT: {gt_batch.shape}")
+                
                 loss, loss_dict = criterion(output, img1_batch, img2_batch, gt_batch)
 
             if torch.isnan(loss) or torch.isinf(loss):
@@ -303,6 +318,11 @@ def native_resolution_train(model, train_loader, val_loader, test_dataset, epoch
 
                 with autocast():
                     output = model(img1_batch, img2_batch)
+                    
+                    # Debug: Print shapes if there's a mismatch
+                    if output.shape[-2:] != gt_batch.shape[-2:]:
+                        print(f"⚠️ Val size mismatch - Output: {output.shape}, GT: {gt_batch.shape}")
+                    
                     loss, loss_dict = criterion(output, img1_batch, img2_batch, gt_batch)
 
                 if torch.isnan(loss) or torch.isinf(loss):
