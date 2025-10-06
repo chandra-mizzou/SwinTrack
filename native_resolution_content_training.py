@@ -149,11 +149,17 @@ def native_collate(batch):
     
     return torch.stack(padded_img1), torch.stack(padded_img2), torch.stack(padded_gt), names
 
-# NATIVE RESOLUTION Content Preservation Loss
+# NATIVE RESOLUTION Content Preservation Loss with Perceptual Loss
 class NativeContentLoss(nn.Module):
     def __init__(self, device='cpu'):
         super(NativeContentLoss, self).__init__()
         self.device = device
+        
+        # VGG for perceptual loss
+        vgg = vgg19(pretrained=True)
+        self.vgg_features = nn.Sequential(*list(vgg.features)[:16]).eval().to(device)
+        for param in self.vgg_features.parameters():
+            param.requires_grad = False
 
     def forward(self, fused, rgb, thermal, gt):
         # 1. REFERENCE GT LOSS - Learn from the reference fusion
@@ -172,17 +178,47 @@ class NativeContentLoss(nn.Module):
         thermal_ssim = self.ssim(fused, thermal)
         thermal_content_loss = 0.7 * thermal_l1 + 0.3 * (1 - thermal_ssim)
         
-        # TOTAL LOSS - Focus on content preservation
+        # 4. PERCEPTUAL LOSS - High-level features from GT
+        perceptual_loss = self.perceptual_loss(fused, gt)
+        
+        # TOTAL LOSS - Focus on content preservation + perceptual quality
         total_loss = (1.0 * gt_loss + 
                      0.8 * rgb_content_loss +
-                     0.8 * thermal_content_loss)
+                     0.8 * thermal_content_loss +
+                     0.3 * perceptual_loss)
         
         return total_loss, {
             'gt_loss': gt_loss.item(),
             'rgb_content_loss': rgb_content_loss.item(),
             'thermal_content_loss': thermal_content_loss.item(),
+            'perceptual_loss': perceptual_loss.item(),
             'total_loss': total_loss.item()
         }
+    
+    def perceptual_loss(self, fused, gt):
+        """Calculate perceptual loss using VGG features"""
+        if fused.size(1) == 1:
+            fused_3ch = fused.repeat(1, 3, 1, 1)
+            gt_3ch = gt.repeat(1, 3, 1, 1)
+        else:
+            fused_3ch = fused
+            gt_3ch = gt
+            
+        # Denormalize for VGG
+        fused_3ch = self.denormalize(fused_3ch)
+        gt_3ch = self.denormalize(gt_3ch)
+        
+        # Downsample for memory efficiency if needed
+        if fused_3ch.shape[-1] > 256:
+            scale_factor = 256 / fused_3ch.shape[-1]
+            fused_3ch = F.interpolate(fused_3ch, scale_factor=scale_factor, mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            gt_3ch = F.interpolate(gt_3ch, scale_factor=scale_factor, mode='bilinear', align_corners=False, recompute_scale_factor=True)
+        
+        return F.mse_loss(self.vgg_features(fused_3ch), self.vgg_features(gt_3ch))
+    
+    def denormalize(self, tensor):
+        """Denormalize tensor from [-1,1] normalization"""
+        return (tensor + 1) / 2
     
     def ssim(self, pred, target, window_size=11):
         """SSIM implementation for native resolution"""
@@ -315,6 +351,7 @@ print(f"📊 Image size: Native resolution (up to 1024px)")
 print(f"📊 Batch size: 2 (for memory efficiency)")
 print(f"📊 Focus: Retain content from both RGB and Thermal")
 print(f"📊 Reference: Learn from GT fusion output")
+print(f"📊 Loss: L1 + SSIM + Perceptual + Content Preservation")
 print(f"📊 NO resizing - preserves all image details!")
 
 native_resolution_train(model, train_loader, val_loader, test_dataset, epochs=num_epochs, device=device)
