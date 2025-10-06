@@ -108,8 +108,32 @@ val_dataset = ContentPreservationDataset(folder1, folder2, folder3, val_files, i
 test_dataset = ContentPreservationDataset(folder1, folder2, folder3, test_files, is_training=False)
 
 def custom_collate(batch):
+    """Custom collate function to handle variable image sizes"""
     img1_list, img2_list, gt_list, names = zip(*batch)
-    return torch.stack(img1_list), torch.stack(img2_list), torch.stack(gt_list), names
+    
+    # Find the maximum size in the batch
+    max_h = max(img.shape[1] for img in img1_list)
+    max_w = max(img.shape[2] for img in img1_list)
+    
+    # Pad all images to the same size
+    padded_img1 = []
+    padded_img2 = []
+    padded_gt = []
+    
+    for img1, img2, gt in zip(img1_list, img2_list, gt_list):
+        # Pad to max size
+        pad_h = max_h - img1.shape[1]
+        pad_w = max_w - img1.shape[2]
+        
+        img1_padded = F.pad(img1, (0, pad_w, 0, pad_h), mode='reflect')
+        img2_padded = F.pad(img2, (0, pad_w, 0, pad_h), mode='reflect')
+        gt_padded = F.pad(gt, (0, pad_w, 0, pad_h), mode='reflect')
+        
+        padded_img1.append(img1_padded)
+        padded_img2.append(img2_padded)
+        padded_gt.append(gt_padded)
+    
+    return torch.stack(padded_img1), torch.stack(padded_img2), torch.stack(padded_gt), names
 
 # CONTENT PRESERVATION Loss Function
 class ContentPreservationLoss(nn.Module):
