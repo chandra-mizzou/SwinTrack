@@ -5,9 +5,10 @@
 # - Then clusters kept detections by IoU >= CLUSTER_IOU and averages boxes
 # - Chooses class labels by source preference: RFDETR > FRCNN > YOLO > Retina
 # - Stable names per class (e.g., car_1, car_2...), reuse only if bbox center within 10 px (over up to 3 missed frames)
-# - Enhanced BERT processing for complex tracking commands
+# - Enhanced BERT processing for complex tracking commands with MULTIPLE TARGET SUPPORT
 # - Press 'c' -> "track <description>" (BERT-based selection), "reset", "quit"
-# - Tracks only the selected target until it's lost (missed > 3 frames), then resumes all
+# - Tracks only the selected target(s) until lost (missed > 3 frames), then resumes all
+# - RETAINS ALL LABELS: Selected targets show bbox+label in GREEN, others show only label in RED
 
 import os
 import glob
@@ -55,9 +56,9 @@ CENTER_REUSE_PX = 20              # reuse a label only if center shift <= 10 px
 MISS_TOLERANCE_FRAMES = 15         # keep a label alive up to 5 missed frames
 HISTORY_FRAMES = 15                # label reuse memory window for names/indices
 
-DRAW_SELECTED_COLOR = (0, 255, 0)
-DRAW_GENERAL_COLOR = (0, 0, 255)
-DRAW_TRAJ_COLOR = (255, 255, 0)
+DRAW_SELECTED_COLOR = (0, 255, 0)  # GREEN for selected targets (bbox + label)
+DRAW_UNSELECTED_COLOR = (0, 0, 255)  # RED for unselected targets (label only)
+DRAW_TRAJ_COLOR = (255, 255, 0)   # YELLOW for trajectories
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 def ensure_dir(p):
@@ -303,8 +304,8 @@ def merge_detections_m_by_n(all_dets, m_sources=CONSENSUS_SOURCES_REQUIRED, cons
 
 	return clusters
 
-# -------- Enhanced BERT-based command processing --------
-class EnhancedCommandProcessor:
+# -------- Enhanced BERT-based command processing with MULTIPLE TARGET SUPPORT --------
+class MultiTargetCommandProcessor:
 	def __init__(self, tokenizer, bert_model, device):
 		self.tokenizer = tokenizer
 		self.bert_model = bert_model
@@ -330,29 +331,42 @@ class EnhancedCommandProcessor:
 		return out
 	
 	def parse_command(self, command, current_outputs, tracker):
-		"""Parse and execute complex tracking commands"""
+		"""Parse and execute complex tracking commands - returns list of targets for multiple tracking"""
 		command = command.lower().strip()
 		
 		# Extract current targets and their properties
 		current_targets = {}
 		for box, label, traj in current_outputs:
-			# Get class_id from the tracker registry, with fallback
+			# Get class_id from the tracker registry, with robust fallback
 			class_id = 0  # default
+			class_name = "person"  # default
+			
 			if label in tracker.registry:
-				# Try to get class_id from registry, fallback to parsing from label
-				if 'class_id' in tracker.registry[label]:
-					class_id = tracker.registry[label]['class_id']
-				else:
-					# Parse class from label name (e.g., "person_1" -> 0 for person)
-					base_name = tracker.registry[label].get('base', 'person')
+				registry_entry = tracker.registry[label]
+				
+				# Try to get class_id from registry
+				if 'class_id' in registry_entry:
+					class_id = registry_entry['class_id']
+				elif 'base' in registry_entry:
+					# Parse class from base name
+					base_name = registry_entry['base']
 					class_id = self._get_class_id_from_name(base_name)
+					class_name = base_name
+				else:
+					# Fallback: try to parse from label name
+					class_id = self._get_class_id_from_label_name(label)
+					class_name = self._get_class_name_from_label(label)
+			else:
+				# Fallback: parse from label name
+				class_id = self._get_class_id_from_label_name(label)
+				class_name = self._get_class_name_from_label(label)
 			
 			current_targets[label] = {
 				'box': box,
 				'trajectory': traj,
 				'center': get_box_center(box),
 				'area': get_box_area(box),
-				'class_name': class_id_to_name(class_id),
+				'class_name': class_name,
 				'class_id': class_id
 			}
 		
@@ -364,6 +378,18 @@ class EnhancedCommandProcessor:
 		
 		# Fallback to simple BERT-based matching
 		return self._bert_fallback(command, current_targets)
+	
+	def _get_class_id_from_label_name(self, label):
+		"""Extract class_id from label name like 'person_1' -> 0"""
+		# Remove numbers and underscores, get base class
+		base_name = re.sub(r'_\d+$', '', label)
+		return self._get_class_id_from_name(base_name)
+	
+	def _get_class_name_from_label(self, label):
+		"""Extract class name from label like 'person_1' -> 'person'"""
+		# Remove numbers and underscores, get base class
+		base_name = re.sub(r'_\d+$', '', label)
+		return base_name
 	
 	def _get_class_id_from_name(self, class_name):
 		"""Get class_id from class name"""
@@ -389,60 +415,71 @@ class EnhancedCommandProcessor:
 		return class_mapping.get(class_name.lower(), 0)  # default to person
 	
 	def _execute_pattern(self, pattern_name, match, current_targets, command):
-		"""Execute specific pattern-based commands"""
+		"""Execute specific pattern-based commands - returns list of targets for multiple tracking"""
 		if pattern_name == 'multiple_targets':
-			# track person_3 and person_4
+			# track person_3 and person_4 -> return BOTH targets
 			label1, label2 = match.groups()
 			return self._find_multiple_targets([label1, label2], current_targets)
 		
 		elif pattern_name == 'spatial_relationship':
 			# track target left/right/above/below of target_a
 			direction, reference_label = match.groups()
-			return self._find_spatial_target(current_targets, reference_label, direction)
+			result = self._find_spatial_target(current_targets, reference_label, direction)
+			return [result[0]] if result[0] else [], result[1] if result[0] else 0.0
 		
 		elif pattern_name == 'object_with_property':
 			# track target with ball
 			property_desc = match.group(1)
-			return self._find_target_with_property(current_targets, property_desc)
+			result = self._find_target_with_property(current_targets, property_desc)
+			return [result[0]] if result[0] else [], result[1] if result[0] else 0.0
 		
 		elif pattern_name == 'switch_track':
 			# switch track to target left/right of target_a
 			direction, reference_label = match.groups()
-			return self._find_spatial_target(current_targets, reference_label, direction)
+			result = self._find_spatial_target(current_targets, reference_label, direction)
+			return [result[0]] if result[0] else [], result[1] if result[0] else 0.0
 		
 		elif pattern_name == 'size_based':
 			# track largest/smallest target
 			size_type = match.group(1)
-			return self._find_size_based_target(current_targets, size_type)
+			result = self._find_size_based_target(current_targets, size_type)
+			return [result[0]] if result[0] else [], result[1] if result[0] else 0.0
 		
 		elif pattern_name == 'movement_based':
 			# track target moving/stationary
 			movement_type = match.group(1)
-			return self._find_movement_based_target(current_targets, movement_type)
+			result = self._find_movement_based_target(current_targets, movement_type)
+			return [result[0]] if result[0] else [], result[1] if result[0] else 0.0
 		
 		elif pattern_name == 'color_based':
 			# track red/blue target
 			color = match.group(1)
-			return self._find_color_based_target(current_targets, color)
+			result = self._find_color_based_target(current_targets, color)
+			return [result[0]] if result[0] else [], result[1] if result[0] else 0.0
 		
 		elif pattern_name == 'class_based':
 			# track person/car/ball
 			class_name = match.group(1)
-			return self._find_class_based_target(current_targets, class_name)
+			result = self._find_class_based_target(current_targets, class_name)
+			return [result[0]] if result[0] else [], result[1] if result[0] else 0.0
 		
 		elif pattern_name == 'specific_target':
 			# track person_3
 			target_label = match.group(1)
-			return self._find_specific_target(current_targets, target_label)
+			result = self._find_specific_target(current_targets, target_label)
+			return [result[0]] if result[0] else [], result[1] if result[0] else 0.0
 		
-		return None, 0.0
+		return [], 0.0
 	
 	def _find_multiple_targets(self, target_labels, current_targets):
-		"""Find multiple specific targets"""
+		"""Find multiple specific targets - returns list of targets"""
 		matches = []
+		confidences = []
+		
 		for label in target_labels:
 			if label in current_targets:
-				matches.append((label, 1.0))  # Perfect match
+				matches.append(label)
+				confidences.append(1.0)  # Perfect match
 			else:
 				# Try fuzzy matching
 				best_match = None
@@ -453,15 +490,12 @@ class EnhancedCommandProcessor:
 						best_sim = sim
 						best_match = current_label
 				if best_match and best_sim > 0.5:  # Threshold for fuzzy matching
-					matches.append((best_match, best_sim))
+					matches.append(best_match)
+					confidences.append(best_sim)
 		
-		if len(matches) >= 2:
-			# Return the first match for now (you could modify this to return multiple)
-			return matches[0]
-		elif len(matches) == 1:
-			return matches[0]
-		else:
-			return None, 0.0
+		# Return list of targets and average confidence
+		avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+		return matches, avg_confidence
 	
 	def _find_specific_target(self, current_targets, target_label):
 		"""Find a specific target by exact or fuzzy match"""
@@ -613,7 +647,7 @@ class EnhancedCommandProcessor:
 				best_sim = sim
 				best_match = label
 		
-		return best_match, best_sim
+		return [best_match] if best_match else [], best_sim
 	
 	def _calculate_similarity(self, label1, label2):
 		"""Calculate similarity between two labels"""
@@ -638,7 +672,7 @@ class TrackRegistry:
         self.next_idx[base] += 1
         return label
 
-    def step(self, frame_idx, merged_dets, selected_label=None):
+    def step(self, frame_idx, merged_dets, selected_labels=None):
         matched = set()
         new_registry = {}
 
@@ -759,11 +793,14 @@ class TrackRegistry:
 
         self.registry = new_registry
 
+        # Check if any selected targets are lost
         selected_lost = False
-        if selected_label is not None:
-            st = self.registry.get(selected_label)
-            if st is None or st["missing"] > self.miss_tol:
-                selected_lost = True
+        if selected_labels is not None:
+            for selected_label in selected_labels:
+                st = self.registry.get(selected_label)
+                if st is None or st["missing"] > self.miss_tol:
+                    selected_lost = True
+                    break
 
         return outputs, selected_lost
 
@@ -778,8 +815,8 @@ def main():
 		return
 
 	tracker = TrackRegistry()
-	command_processor = EnhancedCommandProcessor(tokenizer, bert, device)
-	selected_label = None
+	command_processor = MultiTargetCommandProcessor(tokenizer, bert, device)
+	selected_labels = []  # List for multiple targets
 	track_only_selected = False
 	paused = False
 	last_outputs = []
@@ -814,29 +851,41 @@ def main():
 			)
 
 			# 3) update identities and trajectories with center-distance reuse and miss tolerance
-			outputs, selected_lost = tracker.step(frame_idx, merged, selected_label=selected_label)
+			outputs, selected_lost = tracker.step(frame_idx, merged, selected_labels=selected_labels)
 
-			# 4) track only selected if set and not lost
-			if track_only_selected and selected_label is not None and not selected_lost:
-				outputs = [(b, lbl, traj) for (b, lbl, traj) in outputs if lbl == selected_label]
-			elif track_only_selected and selected_lost:
-				print("[INFO] Selected target lost. Resuming all targets.")
-				track_only_selected = False
-				selected_label = None
+			# 4) MODIFIED: Always show ALL targets, but filter only for tracking logic
+			# We don't filter outputs here - we show all targets in the drawing section
 
-			# 5) draw
+			# 5) draw with enhanced visualization
 			canvas = frame_bgr.copy()
+			
+			# Draw all targets with different styles based on selection status
 			for box, lbl, traj in outputs:
 				b = list(map(int, box))
-				color = DRAW_SELECTED_COLOR if lbl == selected_label else DRAW_GENERAL_COLOR
-				cv2.rectangle(canvas, (b[0], b[1]), (b[2], b[3]), color, 2)
-				cv2.putText(canvas, lbl, (b[0], b[1]-8), FONT, 0.6, color, 2)
-				traj_to_draw = traj[-15:] if len(traj) > 15 else traj
 				
-				for t in range(1, len(traj_to_draw)):
-					p1 = (int(traj_to_draw[t-1][0]), int(traj_to_draw[t-1][1]))
-					p2 = (int(traj_to_draw[t][0]), int(traj_to_draw[t][1]))
-					cv2.line(canvas, p1, p2, DRAW_TRAJ_COLOR, 2)
+				# Determine if this target is selected
+				is_selected = lbl in selected_labels
+				
+				if is_selected:
+					# SELECTED TARGETS: Green bbox + label + trajectory
+					color = DRAW_SELECTED_COLOR
+					# Draw bounding box
+					cv2.rectangle(canvas, (b[0], b[1]), (b[2], b[3]), color, 2)
+					# Draw label
+					cv2.putText(canvas, lbl, (b[0], b[1]-8), FONT, 0.6, color, 2)
+					# Draw trajectory
+					traj_to_draw = traj[-15:] if len(traj) > 15 else traj
+					for t in range(1, len(traj_to_draw)):
+						p1 = (int(traj_to_draw[t-1][0]), int(traj_to_draw[t-1][1]))
+						p2 = (int(traj_to_draw[t][0]), int(traj_to_draw[t][1]))
+						cv2.line(canvas, p1, p2, DRAW_TRAJ_COLOR, 2)
+				else:
+					# UNSELECTED TARGETS: Only red label (no bbox, no trajectory)
+					color = DRAW_UNSELECTED_COLOR
+					# Draw only label at center of box
+					center_x = (b[0] + b[2]) // 2
+					center_y = (b[1] + b[3]) // 2
+					cv2.putText(canvas, lbl, (center_x, center_y), FONT, 0.5, color, 1)
 
 			cv2.imshow("Tracking", canvas)
 
@@ -869,24 +918,33 @@ def main():
 			print("  - track person_3 (track specific target)")
 			print("  - reset (resume all targets)")
 			print("  - quit")
+			print("\n[VISUAL] Selected targets: GREEN bbox+label+trajectory")
+			print("[VISUAL] Other targets: RED label only (no bbox)")
 			cmd = input(">> ").strip()
 
 			if cmd.lower() == "quit":
 				break
 			elif cmd.lower() == "reset":
 				track_only_selected = False
-				selected_label = None
-				print("[INFO] Reset. Tracking all targets.")
+				selected_labels = []
+				print("[INFO] Reset. All targets will show bboxes and labels.")
 			else:
 				if len(tracker.registry) == 0:
 					print("[WARN] No targets to select.")
 				else:
-					# Use enhanced command processor
-					best_match, confidence = command_processor.parse_command(cmd, last_outputs, tracker)
-					if best_match is not None:
-						selected_label = best_match
+					# Use enhanced command processor - now returns list of targets
+					target_matches, confidence = command_processor.parse_command(cmd, last_outputs, tracker)
+					if target_matches:
+						selected_labels = target_matches
 						track_only_selected = True
-						print(f"[INFO] Tracking '{selected_label}' (confidence={confidence:.2f})")
+						if len(target_matches) == 1:
+							print(f"[INFO] Tracking '{target_matches[0]}' (confidence={confidence:.2f})")
+							print(f"[VISUAL] '{target_matches[0]}' will show GREEN bbox+label+trajectory")
+							print(f"[VISUAL] All other targets will show RED labels only")
+						else:
+							print(f"[INFO] Tracking multiple targets: {target_matches} (avg confidence={confidence:.2f})")
+							print(f"[VISUAL] Selected targets will show GREEN bbox+label+trajectory")
+							print(f"[VISUAL] All other targets will show RED labels only")
 					else:
 						print("[WARN] No match found for command.")
 			paused = False
