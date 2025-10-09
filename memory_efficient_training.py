@@ -15,7 +15,11 @@ import sys
 import os
 import numpy as np
 import math
+import warnings
 from memory_efficient_transformer import MemoryEfficientRGBThermalFusion
+
+# Suppress interpolation warnings
+warnings.filterwarnings("ignore", message=".*interpolate.*recompute_scale_factor.*")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
@@ -111,8 +115,8 @@ class MemoryEfficientLoss(nn.Module):
         # Downsample for memory efficiency
         if fused_3ch.shape[-1] > 128:  # Reduced from 256
             scale_factor = 128 / fused_3ch.shape[-1]
-            fused_3ch = F.interpolate(fused_3ch, scale_factor=scale_factor, mode='bilinear', align_corners=False)
-            gt_3ch = F.interpolate(gt_3ch, scale_factor=scale_factor, mode='bilinear', align_corners=False)
+            fused_3ch = F.interpolate(fused_3ch, scale_factor=scale_factor, mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            gt_3ch = F.interpolate(gt_3ch, scale_factor=scale_factor, mode='bilinear', align_corners=False, recompute_scale_factor=True)
         
         return F.mse_loss(self.vgg_features(fused_3ch), self.vgg_features(gt_3ch))
     

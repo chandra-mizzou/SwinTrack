@@ -210,8 +210,8 @@ class MemoryEfficientRGBThermalFusion(nn.Module):
         if height > 64 or width > 64:
             scale_factor = min(64 / height, 64 / width)
             new_h, new_w = int(height * scale_factor), int(width * scale_factor)
-            rgb_features = F.interpolate(rgb_features, size=(new_h, new_w), mode='bilinear', align_corners=False)
-            thermal_features = F.interpolate(thermal_features, size=(new_h, new_w), mode='bilinear', align_corners=False)
+            rgb_features = F.interpolate(rgb_features, size=(new_h, new_w), mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            thermal_features = F.interpolate(thermal_features, size=(new_h, new_w), mode='bilinear', align_corners=False, recompute_scale_factor=True)
             height, width = new_h, new_w
         
         # Reshape for transformer: [B, H*W, d_model]
@@ -236,8 +236,8 @@ class MemoryEfficientRGBThermalFusion(nn.Module):
         
         # Upsample back to original size if needed
         if rgb_features.shape[-2:] != (rgb.shape[-2], rgb.shape[-1]):
-            rgb_features = F.interpolate(rgb_features, size=(rgb.shape[-2], rgb.shape[-1]), mode='bilinear', align_corners=False)
-            thermal_features = F.interpolate(thermal_features, size=(rgb.shape[-2], rgb.shape[-1]), mode='bilinear', align_corners=False)
+            rgb_features = F.interpolate(rgb_features, size=(rgb.shape[-2], rgb.shape[-1]), mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            thermal_features = F.interpolate(thermal_features, size=(rgb.shape[-2], rgb.shape[-1]), mode='bilinear', align_corners=False, recompute_scale_factor=True)
         
         # Feature fusion
         fused_features = torch.cat([rgb_features, thermal_features], dim=1)
@@ -248,7 +248,7 @@ class MemoryEfficientRGBThermalFusion(nn.Module):
         
         # Ensure output matches input size
         if output.shape[-2:] != (rgb.shape[-2], rgb.shape[-1]):
-            output = F.interpolate(output, size=(rgb.shape[-2], rgb.shape[-1]), mode='bilinear', align_corners=False)
+            output = F.interpolate(output, size=(rgb.shape[-2], rgb.shape[-1]), mode='bilinear', align_corners=False, recompute_scale_factor=True)
         
         return torch.sigmoid(output)
 

@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import warnings
+
+# Suppress interpolation warnings
+warnings.filterwarnings("ignore", message=".*interpolate.*recompute_scale_factor.*")
 
 class PositionalEncoding(nn.Module):
     """Positional encoding for transformer attention"""
@@ -224,7 +228,7 @@ class RGBThermalFusionTransformer(nn.Module):
         
         # Ensure output matches input size
         if output.shape[-2:] != (height, width):
-            output = F.interpolate(output, size=(height, width), mode='bilinear', align_corners=False)
+            output = F.interpolate(output, size=(height, width), mode='bilinear', align_corners=False, recompute_scale_factor=True)
         
         return torch.sigmoid(output)
 
