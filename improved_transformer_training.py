@@ -269,8 +269,8 @@ class ImprovedRGBThermalFusion(nn.Module):
             scale_factor = min(max_attn_res / float(H), max_attn_res / float(W))
             new_h = max(1, int(H * scale_factor))
             new_w = max(1, int(W * scale_factor))
-            rgb_features = F.interpolate(rgb_features, size=(new_h, new_w), mode='bilinear', align_corners=False, recompute_scale_factor=True)
-            thermal_features = F.interpolate(thermal_features, size=(new_h, new_w), mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            rgb_features = F.interpolate(rgb_features, size=(new_h, new_w), mode='bilinear', align_corners=False)
+            thermal_features = F.interpolate(thermal_features, size=(new_h, new_w), mode='bilinear', align_corners=False)
             H_attn, W_attn = new_h, new_w
         else:
             H_attn, W_attn = H, W
@@ -292,8 +292,8 @@ class ImprovedRGBThermalFusion(nn.Module):
         thermal_feats_spatial = thermal_seq.transpose(1, 2).contiguous().view(B, self.d_model, H_attn, W_attn)
 
         if (H_attn, W_attn) != (H, W):
-            rgb_feats_spatial = F.interpolate(rgb_feats_spatial, size=(H, W), mode='bilinear', align_corners=False, recompute_scale_factor=True)
-            thermal_feats_spatial = F.interpolate(thermal_feats_spatial, size=(H, W), mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            rgb_feats_spatial = F.interpolate(rgb_feats_spatial, size=(H, W), mode='bilinear', align_corners=False)
+            thermal_feats_spatial = F.interpolate(thermal_feats_spatial, size=(H, W), mode='bilinear', align_corners=False)
 
         fused = torch.cat([rgb_feats_spatial, thermal_feats_spatial], dim=1)
         fused = self.feature_fusion(fused)
@@ -316,11 +316,11 @@ class ImprovedFusionLoss(nn.Module):
         target_size = gt.shape[-2:]
         
         if fused.shape[-2:] != target_size:
-            fused = F.interpolate(fused, size=target_size, mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            fused = F.interpolate(fused, size=target_size, mode='bilinear', align_corners=False)
         if rgb.shape[-2:] != target_size:
-            rgb = F.interpolate(rgb, size=target_size, mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            rgb = F.interpolate(rgb, size=target_size, mode='bilinear', align_corners=False)
         if thermal.shape[-2:] != target_size:
-            thermal = F.interpolate(thermal, size=target_size, mode='bilinear', align_corners=False, recompute_scale_factor=True)
+            thermal = F.interpolate(thermal, size=target_size, mode='bilinear', align_corners=False)
         
         l1_loss = F.l1_loss(fused, gt)
         ssim_loss = 1 - self.ssim(fused, gt)
