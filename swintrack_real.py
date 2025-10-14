@@ -87,16 +87,15 @@ class SwinTrackTracker:
         print("Building SwinTrack model...")
         
         class RuntimeVars:
-            def __init__(self):
+            def __init__(self, device):
                 self.resume = None
                 self.weight_path = None
-                self.device = str(self.device)
+                self.device = str(device)
                 self.distributed = False
                 self.local_rank = 0
                 self.enable_autograd_detect_anomaly = False
         
-        runtime_vars = RuntimeVars()
-        runtime_vars.device = str(self.device)
+        runtime_vars = RuntimeVars(self.device)
         
         try:
             model, _ = build_model(
