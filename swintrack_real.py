@@ -167,7 +167,8 @@ class SwinTrackTracker:
         bbox_w = 0.1  # Could be made configurable
         bbox_h = 0.1
         
-        return (x_norm - bbox_w/2, y_norm - bbox_h/2, bbox_w, bbox_h)
+        # Convert tensors to Python floats for JSON serialization
+        return (float(x_norm - bbox_w/2), float(y_norm - bbox_h/2), float(bbox_w), float(bbox_h))
     
     def initialize_tracking(self, template_image, bbox=None):
         """Initialize tracking with a template image."""
