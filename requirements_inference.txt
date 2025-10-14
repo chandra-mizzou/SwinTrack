@@ -1,0 +1,21 @@
+# SwinTrack Inference Requirements
+# Core dependencies
+torch>=1.9.0
+torchvision
+numpy
+opencv-python
+Pillow
+matplotlib
+pyyaml
+
+# Additional dependencies for SwinTrack
+timm
+fvcore
+tqdm
+scipy
+shapely
+configparser
+pyzmq
+
+# Optional dependencies for better performance
+wandb  # for logging (optional)
