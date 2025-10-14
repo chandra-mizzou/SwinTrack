@@ -101,7 +101,7 @@ class SwinTrackTracker:
             model, _ = build_model(
                 self.config, 
                 runtime_vars, 
-                batch_size=1, 
+                max_batch_size=1, 
                 num_epochs=1, 
                 iterations_per_epoch=1, 
                 event_register=EventRegister('inference/'),
