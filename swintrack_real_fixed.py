@@ -137,7 +137,28 @@ class SwinTrackTracker:
             print(f"✗ Failed to load weights: {e}")
             raise
     
-    def _preprocess_image_for_swintrack(self, image, target_size, bbox=None):
+    def _crop_bbox_region(self, image, bbox):
+        """Crop bounding box region from image."""
+        h, w = image.shape[:2]
+        x, y, bbox_w, bbox_h = bbox
+        
+        # Convert normalized coordinates to pixel coordinates
+        x1 = int(x * w)
+        y1 = int(y * h)
+        x2 = int((x + bbox_w) * w)
+        y2 = int((y + bbox_h) * h)
+        
+        # Ensure coordinates are within image bounds
+        x1 = max(0, min(x1, w-1))
+        y1 = max(0, min(y1, h-1))
+        x2 = max(x1+1, min(x2, w))
+        y2 = max(y1+1, min(y2, h))
+        
+        # Crop the region
+        cropped = image[y1:y2, x1:x2]
+        return cropped
+    
+    def _preprocess_image_for_swintrack(self, image, target_size, bbox=None, is_template=False):
         """
         Preprocess image for SwinTrack inference with correct format.
         
@@ -147,6 +168,11 @@ class SwinTrackTracker:
         """
         if len(image.shape) == 3 and image.shape[2] == 3:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # For template, crop the bbox region first
+        if is_template and bbox is not None:
+            image = self._crop_bbox_region(image, bbox)
+            print(f"Cropped template region from bbox {bbox}, new size: {image.shape}")
         
         # Resize image to target size
         pil_image = Image.fromarray(image)
@@ -211,10 +237,11 @@ class SwinTrackTracker:
             bbox = (0.4, 0.4, 0.2, 0.2)
         
         self.initial_bbox = bbox
+        print(f"Using bbox for template: {bbox}")
         
-        # Preprocess template image with correct format
+        # Preprocess template image with correct format - CROP from bbox first
         template_tensor = self._preprocess_image_for_swintrack(
-            template_image, self.template_size, bbox
+            template_image, self.template_size, bbox, is_template=True
         )
         print(f"Template tensor shape: {template_tensor.shape}")
         
@@ -233,9 +260,9 @@ class SwinTrackTracker:
         if self.template_features is None:
             raise ValueError("Tracking not initialized. Call initialize_tracking() first.")
         
-        # Preprocess search image with correct format
+        # Preprocess search image with correct format (no bbox cropping for search)
         search_tensor = self._preprocess_image_for_swintrack(
-            search_image, self.search_size
+            search_image, self.search_size, is_template=False
         )
         print(f"Search tensor shape: {search_tensor.shape}")
         
@@ -274,9 +301,12 @@ class SwinTrackTracker:
         print(f"SwinTrack bbox: {bbox}")
         return bbox, response_map
     
-    def visualize_tracking(self, image, bbox, response_map, save_path=None):
+    def visualize_tracking(self, image, bbox, response_map, save_path=None, show_template=False):
         """Visualize tracking results with bounding box and response map."""
-        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+        if show_template and self.initial_bbox is not None:
+            fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+        else:
+            fig, axes = plt.subplots(1, 2, figsize=(15, 6))
         
         # Original image with bounding box
         axes[0].imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
@@ -288,12 +318,22 @@ class SwinTrackTracker:
         axes[0].set_title('SwinTrack Tracking Result')
         axes[0].axis('off')
         
+        # Show template extraction if requested
+        if show_template and self.initial_bbox is not None:
+            template_cropped = self._crop_bbox_region(image, self.initial_bbox)
+            axes[1].imshow(template_cropped)
+            axes[1].set_title('Extracted Template')
+            axes[1].axis('off')
+            response_ax = axes[2]
+        else:
+            response_ax = axes[1]
+        
         # Response map
         response_np = response_map.numpy()
-        im = axes[1].imshow(response_np, cmap='hot', interpolation='nearest')
-        axes[1].set_title('SwinTrack Response Map')
-        axes[1].axis('off')
-        plt.colorbar(im, ax=axes[1])
+        im = response_ax.imshow(response_np, cmap='hot', interpolation='nearest')
+        response_ax.set_title('SwinTrack Response Map')
+        response_ax.axis('off')
+        plt.colorbar(im, ax=response_ax)
         
         # Add track vector
         if len(self.tracking_history) > 1:
@@ -363,8 +403,9 @@ class SwinTrackTracker:
             response_path = os.path.join(output_dir, 'response_maps', f'response_{i:04d}.npy')
             np.save(response_path, response_map_np)
             
-            # Create visualization
-            vis_image = self.visualize_tracking(image, bbox, response_map)
+            # Create visualization (show template extraction for first frame)
+            show_template = (i == 0)
+            vis_image = self.visualize_tracking(image, bbox, response_map, show_template=show_template)
             vis_path = os.path.join(output_dir, 'visualizations', f'vis_{i:04d}.jpg')
             cv2.imwrite(vis_path, cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
             
