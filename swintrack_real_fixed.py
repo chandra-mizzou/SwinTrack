@@ -162,9 +162,8 @@ class SwinTrackTracker:
         """
         Preprocess image for SwinTrack inference with correct format.
         
-        SwinTrack expects:
-        - Template: (B, H_z * W_z, 3) where H_z, W_z are template dimensions
-        - Search: (B, H_x * W_x, 3) where H_x, W_x are search dimensions
+        The SwinTrack model expects (B, H*W, 3) format, but the backbone expects (B, C, H, W).
+        We need to provide (B, C, H, W) format to the backbone.
         """
         if len(image.shape) == 3 and image.shape[2] == 3:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -186,12 +185,8 @@ class SwinTrackTracker:
             std = torch.tensor([0.229, 0.224, 0.225])
             image_tensor = (image_tensor - mean) / std
         
-        # Convert from (H, W, C) to (H*W, C) format expected by SwinTrack
-        h, w, c = image_tensor.shape
-        image_tensor = image_tensor.view(h * w, c)  # Shape: (H*W, 3)
-        
-        # Add batch dimension: (1, H*W, 3)
-        image_tensor = image_tensor.unsqueeze(0)
+        # Convert from (H, W, C) to (B, C, H, W) format expected by backbone
+        image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)  # Shape: (1, 3, H, W)
         
         return image_tensor.to(self.device)
     
